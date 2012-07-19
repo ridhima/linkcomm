@@ -31,12 +31,15 @@ changes 2010-08-27:
 """
 
 import sys, os
+
 from copy import copy
+
 from operator import itemgetter
 from heapq import heappush, heappop
 from collections import defaultdict
 from itertools import combinations, chain # requires python 2.6+
 from optparse import OptionParser
+
 
 def swap(a,b):
     if a > b:
@@ -50,24 +53,42 @@ def Dc(m,n):
         return m*(m-n+1.0)/(n-2.0)/(n-1.0)
     except ZeroDivisionError: # numerator is "strongly zero"
         return 0.0
-
+def Dc_weighted(w,n,w_avg,w_max):
+    """Weighted partition density"""
+    try:
+        return w*(w-(n*w_avg)+(1.0*w_avg))/(n*w_max-2.0*w_avg)/(n-1.0)
+    except ZeroDivisionError: # numerator is "strongly zero"
+        return 0.0
 
 class HLC:
-    def __init__(self,adj,edges):
+    def __init__(self,adj,edges,ij2wij=None):
         self.adj   = adj # node -> set of neighbors
         self.edges = edges # list of edges
+        self.ij2wij = ij2wij # edge -> weight
+        self.max_weight = max(ij2wij.iteritems(), key=operator.itemgetter(1))[1] # Maximum weight in the network
         self.Mfactor  = 2.0 / len(edges)
+        for value in self.ij2wij.itervalues():
+            TotalWeight+=value
+        self.Wfactor  = 2.0 / TotalWeight
         self.edge2cid = {}
         self.cid2nodes,self.cid2edges = {},{}
         self.initialize_edges() # every edge in its own comm
         self.D = 0.0 # partition density
     
     def initialize_edges(self):
-        for cid,edge in enumerate(self.edges):
-            edge = swap(*edge) # just in case
-            self.edge2cid[edge] = cid
-            self.cid2edges[cid] = set([edge])
-            self.cid2nodes[cid] = set( edge )
+        if self.ij2wij!=None :
+            for cid,edge in enumerate(self.edges):
+                edge = swap(*edge) # just in case
+                self.edge2cid[edge] = cid
+                self.cid2edges[cid] = set([edge])
+                self.cid2nodes[cid] = set( edge )
+                self.cid2weight[cid] = self.ij2wij[edge]
+        else :
+            for cid,edge in enumerate(self.edges):
+                edge = swap(*edge) # just in case
+                self.edge2cid[edge] = cid
+                self.cid2edges[cid] = set([edge])
+                self.cid2nodes[cid] = set( edge )
     
     def merge_comms(self,edge1,edge2):
         if not edge1 or not edge2: # We'll get (None, None) at the end of clustering
@@ -77,7 +98,18 @@ class HLC:
             return
         m1,m2 = len(self.cid2edges[cid1]),len(self.cid2edges[cid2])
         n1,n2 = len(self.cid2nodes[cid1]),len(self.cid2nodes[cid2])
-        Dc1, Dc2 = Dc(m1,n1), Dc(m2,n2)
+        
+        if self.ij2wij!=None :
+            for edge in self.cid2edges[cid1] : 
+                w1 +=  self.ij2wij[edge]
+            for edge in self.cid2edges[cid2] : 
+                w2 +=  self.ij2wij[edge]
+            w_avg1 = 1.0*w1/m1
+            w_avg2 = 1.0*w2/m2
+            Dc1, Dc2 = Dc_weighted(w1,n1,w_avg1,self.max_weight), Dc_weighted(w2,n2,w_avg2,self.max_weight)
+        else :
+            Dc1, Dc2 = Dc(m1,n1), Dc(m2,n2)            
+        
         if m2 > m1: # merge smaller into larger
             cid1,cid2 = cid2,cid1
         
@@ -87,10 +119,18 @@ class HLC:
             self.edge2cid[e] = cid1
         del self.cid2edges[cid2], self.cid2nodes[cid2]
         
-        m,n = len(self.cid2edges[cid1]),len(self.cid2nodes[cid1]) 
-        Dc12 = Dc(m,n)
-        self.D = self.D + ( Dc12 -Dc1 - Dc2) * self.Mfactor # update partition density
-    
+        m,n = len(self.cid2edges[cid1]),len(self.cid2nodes[cid1])
+
+        if self.ij2wij!=None :
+            for edge in self.cid2edges[cid1]  :
+                w +=  self.ij2wij[edge]           
+            w_avg = 1.0*w/m
+            Dc12 = Dc_weighted(w,n,w_avg,self.max_weight)
+            self.D = self.D + ( Dc12 -Dc1 - Dc2) * self.Wfactor # update weighted partition density
+        else :
+            Dc12 = Dc(m,n)
+            self.D = self.D + ( Dc12 -Dc1 - Dc2) * self.Mfactor # update unweighted partition density
+     
     def single_linkage(self, threshold=None, w=None):
         print "clustering..."
         self.list_D = [(1.0,0.0)] # list of (S_i,D_i) tuples...
@@ -172,7 +212,19 @@ def similarities_weighted(adj, ij2wij):
                 heappush( min_heap, (1-S,edge_pair) )
     return [ heappop(min_heap) for i in xrange(len(min_heap)) ] # return ordered edge pairs
 
-
+def to_undirected(filename,basename,delimiter=None,nodetype=str,weighttype=float):
+    d = collections.defaultdict(float)
+    for line in open(filename, 'rb'):
+        L = line.strip().split(delimiter)
+        n1,n2,w = nodetype(L[0]),nodetype(L[1]),weighttype(L[2]) # other columns ignored
+        d[min(n1, n2), max(n1, n2)] = d[min(n1, n2), max(n1, n2)]+ w
+    f = open("%s_undirected.txt" % basename,'w')
+    for k, w in d.iteritems():
+        f.write('%s%s%s%s%f\n' % (k[0], delimiter, k[1], delimiter, w))
+        # print >>f, k[0], k[1], w
+    f.close()
+    
+    
 def read_edgelist_unweighted(filename,delimiter=None,nodetype=str):
     """reads two-column edgelist, returns dictionary
     mapping node -> set of neighbors and a list of edges
@@ -291,22 +343,29 @@ Output:
                       help="threshold to cut the dendrogram (optional)")
     parser.add_option("-w", "--weighted", dest="is_weighted", action="store_true", default=False,
                     help="is the network weighted?")
+    parser.add_option("-u", "--directed", dest="is_directed", action="store_true", default=False,
+                    help="is the network directed?")
                     
     # parse options:
     (options, args) = parser.parse_args()
-    if len(args) != 1:
+    if len(args) != 3:
         parser.error("incorrect number of arguments")
     delimiter = options.delimiter
     if delimiter == '\\t':
         delimiter = '\t'
     threshold   = options.threshold
     is_weighted = options.is_weighted
+    is_directed = options.is_directed
     
     
     print "# loading network from edgelist..."
     basename = os.path.splitext(args[0])[0]
     if is_weighted:
-        adj,edges,ij2wij = read_edgelist_weighted(args[0], delimiter=delimiter)
+        if is_directed:
+            to_undirected(args[0], basename, delimiter=delimiter)
+            adj,edges,ij2wij = read_edgelist_weighted(basename_undirected.txt, delimiter=delimiter)
+        else:
+            adj,edges,ij2wij = read_edgelist_weighted(args[0], delimiter=delimiter)       
     else: 
         adj,edges        = read_edgelist_unweighted(args[0], delimiter=delimiter)
     
@@ -330,4 +389,9 @@ Output:
         f.close()
         print "# D_max = %f\n# S_max = %f" % (D_max,S_max)
         write_edge2cid( edge2cid,"%s_maxS%f_maxD%f" % (basename,S_max,D_max), delimiter=delimiter )
+
+     
+
+    
+  
 
