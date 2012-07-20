@@ -33,10 +33,9 @@ changes 2010-08-27:
 import sys, os
 
 from copy import copy
-
+from collections import defaultdict
 from operator import itemgetter
 from heapq import heappush, heappop
-from collections import defaultdict
 from itertools import combinations, chain # requires python 2.6+
 from optparse import OptionParser
 
@@ -65,13 +64,14 @@ class HLC:
         self.adj   = adj # node -> set of neighbors
         self.edges = edges # list of edges
         self.ij2wij = ij2wij # edge -> weight
-        self.max_weight = max(ij2wij.iteritems(), key=operator.itemgetter(1))[1] # Maximum weight in the network
+        self.max_weight = max(ij2wij.iteritems(), key=itemgetter(1))[1] # Maximum weight in the network
         self.Mfactor  = 2.0 / len(edges)
+        TotalWeight =0.0 # Sum of all the weights in a list
         for value in self.ij2wij.itervalues():
-            TotalWeight+=value
+            TotalWeight = TotalWeight+ value
         self.Wfactor  = 2.0 / TotalWeight
         self.edge2cid = {}
-        self.cid2nodes,self.cid2edges = {},{}
+        self.cid2nodes,self.cid2edges,self.cid2weight = {},{},{}
         self.initialize_edges() # every edge in its own comm
         self.D = 0.0 # partition density
     
@@ -98,7 +98,7 @@ class HLC:
             return
         m1,m2 = len(self.cid2edges[cid1]),len(self.cid2edges[cid2])
         n1,n2 = len(self.cid2nodes[cid1]),len(self.cid2nodes[cid2])
-        
+        w1,w2,w=0.0,0.0,0.0
         if self.ij2wij!=None :
             for edge in self.cid2edges[cid1] : 
                 w1 +=  self.ij2wij[edge]
@@ -213,7 +213,7 @@ def similarities_weighted(adj, ij2wij):
     return [ heappop(min_heap) for i in xrange(len(min_heap)) ] # return ordered edge pairs
 
 def to_undirected(filename,basename,delimiter=None,nodetype=str,weighttype=float):
-    d = collections.defaultdict(float)
+    d = defaultdict(float)
     for line in open(filename, 'rb'):
         L = line.strip().split(delimiter)
         n1,n2,w = nodetype(L[0]),nodetype(L[1]),weighttype(L[2]) # other columns ignored
@@ -363,11 +363,12 @@ Output:
     if is_weighted:
         if is_directed:
             to_undirected(args[0], basename, delimiter=delimiter)
-            adj,edges,ij2wij = read_edgelist_weighted(basename_undirected.txt, delimiter=delimiter)
+            filename="%s_undirected.txt" %basename # undirected file
+            adj,edges,ij2wij = read_edgelist_weighted(filename, delimiter=delimiter)
         else:
-            adj,edges,ij2wij = read_edgelist_weighted(args[0], delimiter=delimiter)       
+            adj,edges,ij2wij = read_edgelist_unweighted(args[0], delimiter=delimiter)       
     else: 
-        adj,edges        = read_edgelist_unweighted(args[0], delimiter=delimiter)
+        adj,edges = read_edgelist_unweighted(args[0], delimiter=delimiter)
     
     
     # run the method:
@@ -380,7 +381,7 @@ Output:
         write_edge2cid( edge2cid,"%s_thrS%f_thrD%f" % (basename,threshold,D_thr), delimiter=delimiter )
     else:
         if is_weighted:
-            edge2cid,S_max,D_max,list_D = HLC( adj,edges ).single_linkage( w=ij2wij )
+            edge2cid,S_max,D_max,list_D = HLC( adj,edges,ij2wij ).single_linkage( w=ij2wij )
         else:
             edge2cid,S_max,D_max,list_D = HLC( adj,edges ).single_linkage()
         f = open("%s_thr_D.txt" % basename,'w')
@@ -389,6 +390,7 @@ Output:
         f.close()
         print "# D_max = %f\n# S_max = %f" % (D_max,S_max)
         write_edge2cid( edge2cid,"%s_maxS%f_maxD%f" % (basename,S_max,D_max), delimiter=delimiter )
+
 
      
 
